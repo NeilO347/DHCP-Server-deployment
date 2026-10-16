@@ -1,0 +1,63 @@
+
+[CmdletBinding()]
+param(
+	[Parameter(Mandatory)]
+	[string]$SubscriptionId
+)
+$ErrorActionPreference = 'Stop'
+
+Connect-AzAccount -UseDeviceAuthentication
+
+Set-AzContext -SubscriptionId $SubscriptionId
+
+# Define the lab networking and VM settings
+# Users running in cloud shell may start below (ignore commands above).
+$ResourceGroupName = 'rg-dhcp-lab'
+$Location = 'centralus'
+$VnetName = 'vnet-dhcp-lab'
+$SubnetName = 'snet-dhcp'
+$SubnetAddressPrefix = '10.20.1.0/24'
+$VnetAddressPrefix = '10.20.0.0/16'
+$NicName = 'nic-dhcp-lab'
+$VmName = 'vm-dhcp-lab'
+$VmSize = 'Standard_D2s_v3'
+$ImagePublisher = 'MicrosoftWindowsServer'
+$ImageOffer = 'WindowsServer'
+$ImageSku = '2019-Datacenter'
+
+# DHCP server and scope configuration
+$DhcpServerIp = '10.20.1.4'
+$DhcpScopeStartRange = '10.20.1.100'
+$DhcpScopeEndRange = '10.20.1.200'
+
+# Create the resource group and network
+$ResourceGroup = New-AzResourceGroup -Name $ResourceGroupName -Location $Location
+$SubnetConfig = New-AzVirtualNetworkSubnetConfig -Name $SubnetName -AddressPrefix $SubnetAddressPrefix
+$Vnet = New-AzVirtualNetwork -Name $VnetName -ResourceGroupName $ResourceGroupName -Location $Location -AddressPrefix $VnetAddressPrefix -Subnet $SubnetConfig
+$Nic = New-AzNetworkInterface -Name $NicName -ResourceGroupName $ResourceGroupName -Location $Location -SubnetId $Vnet.Subnets[0].Id -PrivateIpAddress $DhcpServerIp
+$VmCredential = Get-Credential -Message "Enter the local admin credentials for the DHCP VM"
+
+# Create the Windows DHCP server VM
+$VmConfig = New-AzVMConfig -VMName $VmName -VMSize $VmSize
+$VmConfig = Set-AzVMOperatingSystem -VM $VmConfig -Windows -ComputerName $VmName -Credential $VmCredential -ProvisionVMAgent -EnableAutoUpdate
+$VmConfig = Set-AzVMSourceImage -VM $VmConfig -PublisherName $ImagePublisher -Offer $ImageOffer -Skus $ImageSku -Version "latest"
+$VmConfig = Add-AzVMNetworkInterface -VM $VmConfig -Id $Nic.Id -Primary
+$Vm = New-AzVM -ResourceGroupName $ResourceGroupName -Location $Location -VM $VmConfig
+
+# Install DHCP and configure the scope and options
+$InstallDhcpScript = @"
+Install-WindowsFeature -Name DHCP -IncludeManagementTools
+Set-Service -Name DHCPServer -StartupType Automatic
+Start-Service -Name DHCPServer
+Add-DhcpServerV4Scope -Name "DHCP Lab Scope" -StartRange $DhcpScopeStartRange -EndRange $DhcpScopeEndRange -SubnetMask 255.255.255.0 -State Active
+Set-DhcpServerv4OptionValue -DnsServer $DhcpServerIp -Router $DhcpServerIp
+"@
+
+Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $VmName -CommandId 'RunPowerShellScript' -ScriptString $InstallDhcpScript
+
+Write-Host "DHCP server deployment complete. Validate the VM in Azure Portal and configure DHCP clients as needed." -ForegroundColor Green
+
+
+#Notes: Created by Neil O'Sullivan
+        Created on October 2026
+	
